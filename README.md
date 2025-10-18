@@ -38,22 +38,19 @@
 
 ---
 
-## 🎬 Demo
+## 📸 Screenshots
 
-<details>
-<summary>Screenshots</summary>
+<div align="center">
 
-*(Add your screenshots here)*
+**Desktop View - Device List**
 
-**Desktop View**
-- Device list with real-time status
-- Screen mirroring with control buttons
+<img src="img/home.png" alt="Device List" width="800">
 
-**Mobile View**
-- Automatic landscape adaptation
-- Touch-optimized controls
+**Desktop View - Screen Mirroring**
 
-</details>
+<img src="img/device.png" alt="Screen Mirroring" width="800">
+
+</div>
 
 ---
 
