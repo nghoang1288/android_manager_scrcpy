@@ -124,6 +124,20 @@ await fastify.register(async (fastify) => {
     await macroRoutes(fastify);
 }, { prefix: "/api/macros" });
 
+// Cloudflare Tunnel URL endpoint
+fastify.get("/api/tunnel/url", async (_request, reply) => {
+    try {
+        const tunnelUrlPath = path.resolve(__dirname, '../../tunnel/url.txt');
+        if (fs.existsSync(tunnelUrlPath)) {
+            const url = fs.readFileSync(tunnelUrlPath, 'utf-8').trim();
+            return { url, available: true };
+        }
+        return { url: null, available: false, message: 'Tunnel not running' };
+    } catch {
+        return { url: null, available: false, message: 'Failed to read tunnel URL' };
+    }
+});
+
 // 全局错误处理
 fastify.setErrorHandler((error, request, reply) => {
     request.log.error(error);

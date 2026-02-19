@@ -19,3 +19,14 @@ services:
     # If using host network, ports mapping is ignored, but helpful for documentation
     # ports:
     #   - "8080:8080"
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: amc-tunnel
+    restart: unless-stopped
+    network_mode: host
+    # Quick Tunnel: random trycloudflare.com URL, no auth needed
+    # View the tunnel URL with: docker logs amc-tunnel
+    command: tunnel --url https://localhost:8080 --no-tls-verify
+    depends_on:
+      - app

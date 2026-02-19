@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom'
-import { Smartphone, AlertCircle, ArrowUpRightIcon, Terminal, Folder, Plus } from 'lucide-react'
+import { Smartphone, AlertCircle, ArrowUpRightIcon, Terminal, Folder, Plus, Globe, Copy, Check } from 'lucide-react'
 import DeviceDetail from './scrcpy/DeviceDetail'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './components/ui/table'
@@ -31,12 +31,14 @@ function DeviceList() {
     const [error, setError] = useState<string>();
     const [dialogOpen, setDialogOpen] = useState(false);
     const [serialInput, setSerialInput] = useState('');
+    const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
+    const [copiedTunnel, setCopiedTunnel] = useState(false);
 
     useEffect(() => {
         let socket: WebSocket | null = null;
 
         try {
-            socket = new WebSocket(`${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:8080/api/adb/devices`);
+            socket = new WebSocket(`${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/api/adb/devices`);
 
             socket.addEventListener('open', () => {
                 setIsLoading(false);
@@ -70,11 +72,53 @@ function DeviceList() {
         };
     }, []);
 
+    // Fetch tunnel URL
+    useEffect(() => {
+        const fetchTunnelUrl = async () => {
+            try {
+                const res = await fetch('/api/tunnel/url');
+                const data = await res.json();
+                if (data.available && data.url) {
+                    setTunnelUrl(data.url);
+                }
+            } catch {
+                // Tunnel not available, that's fine
+            }
+        };
+        fetchTunnelUrl();
+        // Re-check every 15 seconds in case tunnel starts later
+        const timer = setInterval(fetchTunnelUrl, 15000);
+        return () => clearInterval(timer);
+    }, []);
+
+    const copyTunnelUrl = () => {
+        if (tunnelUrl) {
+            navigator.clipboard.writeText(tunnelUrl);
+            setCopiedTunnel(true);
+            setTimeout(() => setCopiedTunnel(false), 2000);
+        }
+    };
+
     // Show all devices (no filtering)
     const filteredDevices = devices;
 
     return (
-        <div className="container mx-auto p-6 max-w-7xl">
+        <div className="container mx-auto p-6 max-w-7xl space-y-4">
+            {/* Tunnel URL Banner */}
+            {tunnelUrl && (
+                <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 p-3 flex items-center gap-3">
+                    <Globe className="h-5 w-5 text-blue-600 dark:text-blue-400 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-blue-900 dark:text-blue-100">Cloudflare Tunnel Active</p>
+                        <a href={tunnelUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 dark:text-blue-400 hover:underline truncate block">
+                            {tunnelUrl}
+                        </a>
+                    </div>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={copyTunnelUrl} title="Copy URL">
+                        {copiedTunnel ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                    </Button>
+                </div>
+            )}
             <Card>
                 <CardHeader>
                     <div className="flex items-center justify-between">

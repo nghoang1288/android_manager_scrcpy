@@ -20,13 +20,13 @@ import {
     WebCodecsVideoDecoder,
     WebGLVideoFrameRenderer
 } from "@yume-chan/scrcpy-decoder-webcodecs";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { flushSync } from "react-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Spinner } from '../components/ui/spinner';
 import { Button } from '../components/ui/button';
-import { AlertCircle, ArrowLeft, Home, ChevronLeft, Square, Power, Volume2, VolumeOff, RectangleVertical, MonitorOff, MonitorPlay, Circle, StopCircle, Play, Save, FileText, Trash2, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Home, ChevronLeft, Square, Power, Volume2, VolumeOff, RectangleVertical, MonitorOff, MonitorPlay, Circle, StopCircle, Play, Save, FileText, Trash2, X, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { TouchControl } from './TouchControl';
 import { KeyboardControl } from './KeyboardControl';
 import type { DeviceResponse, DeviceInfo } from '../types/device.types';
@@ -90,6 +90,15 @@ export default function DeviceDetail() {
     const [audioError, setAudioError] = useState(false); // 音频是否出错
     const [isMobile, setIsMobile] = useState(false); // 是否为移动设备
     const [isScreenOff, setIsScreenOff] = useState(false);
+
+    // Connection status for auto-reconnect
+    type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+    const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
+    const reconnectAttemptRef = useRef(0);
+    const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const isTabVisibleRef = useRef(true);
+    const isManualDisconnectRef = useRef(false);
+    const MAX_RECONNECT_ATTEMPTS = 10;
 
     // Macro State
     const [isRecording, setIsRecording] = useState(false);
@@ -382,241 +391,332 @@ export default function DeviceDetail() {
         }
     };
 
-    useEffect(() => {
-        // Check if mobile device
-        setIsMobile(isMobileDevice());
+    // --- Disconnect device (cleanup all connections) ---
+    const disconnectDevice = useCallback(() => {
+        // Cleanup Audio
+        audioManagerRef.current?.cleanup();
+        audioManagerRef.current = null;
 
-        // Capture current ref for cleanup
-        const wrapper = wrapperRef.current;
+        // Cleanup Scrcpy
+        if (cleanupRef.current) {
+            cleanupRef.current();
+            cleanupRef.current = null;
+        }
 
+        controllerRef.current = null;
+        scrcpyClientRef.current = null;
+
+        if (wrapperRef.current) {
+            wrapperRef.current.innerHTML = '';
+        }
+
+        // Reset State
+        setIsVideoLoaded(false);
+        setIsLandscape(false);
+        setIsMuted(true);
+        isMutedRef.current = true;
+        setAudioAvailable(true);
+        setAudioError(false);
+    }, []);
+
+    // --- Connect device (initialize everything) ---
+    const connectDevice = useCallback(async () => {
         if (!serial) {
             setError('Missing Device Serial');
             setIsLoading(false);
             return;
         }
 
+        // Cleanup previous connection first
+        disconnectDevice();
 
-        const initializeDevice = async () => {
-            try {
-                const response = await fetch(`${window.location.protocol}//${window.location.hostname}:8080/api/adb/device/${serial}`);
-                if (!response.ok) {
-                    throw new Error(`Failed to fetch device info: ${response.status}`);
-                }
+        setError(undefined);
+        setIsLoading(true);
+        setConnectionStatus('connecting');
 
-                const data: DeviceResponse = await response.json();
-                setDeviceInfo(data.info);
+        try {
+            const response = await fetch(`/api/adb/device/${serial}`);
+            if (!response.ok) {
+                throw new Error(`Failed to fetch device info: ${response.status}`);
+            }
 
-                console.log(`Device Info:`, data);
-                if (data.info.screen_width && data.info.screen_height) {
-                    // Save physical size
-                    const physicalWidth = Math.min(data.info.screen_width, data.info.screen_height);
-                    const physicalHeight = Math.max(data.info.screen_width, data.info.screen_height);
-                    setScreenSize({
-                        width: physicalWidth,
-                        height: physicalHeight
-                    });
-                }
-                setIsLoading(false);
+            const data: DeviceResponse = await response.json();
+            setDeviceInfo(data.info);
 
-                const transport = new WebSocketTransport(
-                    serial,
-                    data.maxPayloadSize,
-                    new AdbBanner(data.product, data.model, data.device, data.features),
-                );
+            console.log(`Device Info:`, data);
+            if (data.info.screen_width && data.info.screen_height) {
+                const physicalWidth = Math.min(data.info.screen_width, data.info.screen_height);
+                const physicalHeight = Math.max(data.info.screen_width, data.info.screen_height);
+                setScreenSize({
+                    width: physicalWidth,
+                    height: physicalHeight
+                });
+            }
+            setIsLoading(false);
 
-                const adb = new Adb(transport);
+            const transport = new WebSocketTransport(
+                serial,
+                data.maxPayloadSize,
+                new AdbBanner(data.product, data.model, data.device, data.features),
+            );
 
-                const scrcpy = await AdbScrcpyClient.start(
-                    adb,
-                    DefaultServerPath,
-                    new AdbScrcpyOptions3_3_3({
-                        videoBitRate: qualityPresets[quality].bitRate,
-                        displayId: 0,
-                        maxFps: qualityPresets[quality].maxFps,
-                        videoSource: "display",
-                        videoCodec: "h264",
-                        audio: true,
-                        // audioCodec: "opus",
-                        // audioBitRate: 128000,
-                        control: true,
-                        tunnelForward: true,
-                        stayAwake: true,
-                        powerOffOnClose: false,
-                        powerOn: false,
-                        clipboardAutosync: true,
-                        sendDeviceMeta: true,
-                        cleanup: true
-                    }),
-                );
+            const adb = new Adb(transport);
 
-                // Save references
-                scrcpyClientRef.current = scrcpy;
-                if (scrcpy.controller) {
-                    controllerRef.current = scrcpy.controller;
-                }
+            const scrcpy = await AdbScrcpyClient.start(
+                adb,
+                DefaultServerPath,
+                new AdbScrcpyOptions3_3_3({
+                    videoBitRate: qualityPresets[quality].bitRate,
+                    displayId: 0,
+                    maxFps: qualityPresets[quality].maxFps,
+                    videoSource: "display",
+                    videoCodec: "h264",
+                    audio: true,
+                    control: true,
+                    tunnelForward: true,
+                    stayAwake: true,
+                    powerOffOnClose: false,
+                    powerOn: false,
+                    clipboardAutosync: true,
+                    sendDeviceMeta: true,
+                    cleanup: true
+                }),
+            );
 
-                // Initialize Audio Stream
-                const initAudioStream = async () => {
-                    try {
-                        const audioStreamPromise = scrcpy.audioStream;
-                        if (!audioStreamPromise) {
-                            console.warn(`Device does not support audio stream`);
-                            setAudioAvailable(false);
-                            return;
-                        }
+            // Save references
+            scrcpyClientRef.current = scrcpy;
+            if (scrcpy.controller) {
+                controllerRef.current = scrcpy.controller;
+            }
 
-                        const metadata = await audioStreamPromise;
-                        if (metadata.type === 'disabled' || metadata.type === 'errored') {
-                            console.warn(`Audio unavailable:`, metadata.type);
-                            setAudioAvailable(false);
-                            if (metadata.type === 'errored') {
-                                setAudioError(true);
-                            }
-                            return;
-                        }
-
-                        console.log(`Audio Codec:`, metadata.codec);
-
-                        // Create and initialize audio manager
-                        const audioManager = new AudioManager(isMutedRef);
-                        audioManager.initialize(metadata.codec, metadata.codec.webCodecId, metadata.stream);
-                        audioManagerRef.current = audioManager;
-
-                        setAudioAvailable(true);
-                        setAudioError(false);
-                    } catch (error: unknown) {
-                        const err = error as Error;
-                        console.warn(`Audio initialization failed (video unaffected):`, err.message || error);
+            // Initialize Audio Stream
+            const initAudioStream = async () => {
+                try {
+                    const audioStreamPromise = scrcpy.audioStream;
+                    if (!audioStreamPromise) {
+                        console.warn(`Device does not support audio stream`);
                         setAudioAvailable(false);
-                        setAudioError(true);
-                    }
-                };
-
-                // Start audio init (don't await)
-                void initAudioStream();
-
-                const stream = scrcpy.videoStream!;
-                stream.then(async ({ stream: originalStream }) => {
-                    // Create a TransformStream to count bytes for Mbps calculation
-                    const statsStream = new TransformStream<ScrcpyMediaStreamPacket, ScrcpyMediaStreamPacket>({
-                        transform(chunk, controller) {
-                            if (chunk.type === 'data' && chunk.data) {
-                                bytesCountRef.current += chunk.data.byteLength;
-                            }
-                            controller.enqueue(chunk);
-                        }
-                    });
-
-                    // Create wrapper element for video
-                    const { renderer: originalRenderer, element } = createVideoFrameRenderer();
-
-                    // Wrap Renderer for FPS counting
-                    const rendererWrapper: VideoFrameRenderer = {
-                        draw: (frame: VideoFrame) => {
-                            framesCountRef.current++;
-                            return originalRenderer.draw(frame);
-                        },
-                        setSize: (width: number, height: number) => {
-                            return originalRenderer.setSize ? originalRenderer.setSize(width, height) : undefined;
-                        }
-                    };
-
-                    if (wrapperRef.current) {
-                        wrapperRef.current.innerHTML = '';
-                        element.style.display = 'block';
-                        element.style.width = '100%';
-                        element.style.height = '100%';
-                        element.style.objectFit = 'contain';
-                        wrapperRef.current.appendChild(element);
+                        return;
                     }
 
-                    const decoder = new WebCodecsVideoDecoder({
-                        codec: ScrcpyVideoCodecId.H264,
-                        renderer: rendererWrapper,
-                    });
-                    setIsVideoLoaded(true);
+                    const metadata = await audioStreamPromise;
+                    if (metadata.type === 'disabled' || metadata.type === 'errored') {
+                        console.warn(`Audio unavailable:`, metadata.type);
+                        setAudioAvailable(false);
+                        if (metadata.type === 'errored') {
+                            setAudioError(true);
+                        }
+                        return;
+                    }
 
-                    // Update size and orientation on change
-                    decoder.sizeChanged(({ width, height }) => {
-                        setVideoSize({ width, height });
+                    console.log(`Audio Codec:`, metadata.codec);
 
-                        const landscape = width > height;
-                        setIsLandscape(landscape);
-                    });
+                    const audioManager = new AudioManager(isMutedRef);
+                    audioManager.initialize(metadata.codec, metadata.codec.webCodecId, metadata.stream);
+                    audioManagerRef.current = audioManager;
 
-                    // Use measured stream for decoder
-                    (originalStream as any)
-                        .pipeThrough(statsStream as any)
-                        .pipeTo(decoder.writable as any)
-                        .catch((error: any) => {
-                            if (error.name !== 'AbortError' &&
-                                !error.message.includes('locked') &&
-                                !error.message.includes('closed')) {
-                                console.error(`Video stream error:`, error);
-                            }
-                        });
+                    setAudioAvailable(true);
+                    setAudioError(false);
+                } catch (error: unknown) {
+                    const err = error as Error;
+                    console.warn(`Audio initialization failed (video unaffected):`, err.message || error);
+                    setAudioAvailable(false);
+                    setAudioError(true);
+                }
+            };
+
+            // Start audio init (don't await)
+            void initAudioStream();
+
+            const stream = scrcpy.videoStream!;
+            stream.then(async ({ stream: originalStream }) => {
+                // Create a TransformStream to count bytes for Mbps calculation
+                const statsStream = new TransformStream<ScrcpyMediaStreamPacket, ScrcpyMediaStreamPacket>({
+                    transform(chunk, controller) {
+                        if (chunk.type === 'data' && chunk.data) {
+                            bytesCountRef.current += chunk.data.byteLength;
+                        }
+                        controller.enqueue(chunk);
+                    }
                 });
 
-                if (scrcpy.clipboard) {
-                    void scrcpy.clipboard.pipeTo(
-                        new WritableStream<string>({
-                            write(chunk) {
-                                globalThis.navigator.clipboard.writeText(chunk);
-                            },
-                        }),
-                    ).catch(err => console.error(`Clipboard error:`, err));
-                }
+                // Create wrapper element for video
+                const { renderer: originalRenderer, element } = createVideoFrameRenderer();
 
-                void scrcpy.output.pipeTo(
-                    new WritableStream<string>({
-                        write(chunk) {
-                            console.log(`Output:`, chunk);
-                        },
-                    }),
-                );
-
-                cleanupRef.current = () => {
-                    scrcpy.close();
-                    adb.close();
-                    transport.close();
+                // Wrap Renderer for FPS counting
+                const rendererWrapper: VideoFrameRenderer = {
+                    draw: (frame: VideoFrame) => {
+                        framesCountRef.current++;
+                        return originalRenderer.draw(frame);
+                    },
+                    setSize: (width: number, height: number) => {
+                        return originalRenderer.setSize ? originalRenderer.setSize(width, height) : undefined;
+                    }
                 };
 
-            } catch (e) {
-                console.error(`Initialization failed:`, e);
-                setError(e instanceof Error ? e.message : 'Device connection failed');
-                setIsLoading(false);
-            }
-        };
+                if (wrapperRef.current) {
+                    wrapperRef.current.innerHTML = '';
+                    element.style.display = 'block';
+                    element.style.width = '100%';
+                    element.style.height = '100%';
+                    element.style.objectFit = 'contain';
+                    wrapperRef.current.appendChild(element);
+                }
 
-        initializeDevice();
+                const decoder = new WebCodecsVideoDecoder({
+                    codec: ScrcpyVideoCodecId.H264,
+                    renderer: rendererWrapper,
+                });
+                setIsVideoLoaded(true);
+                setConnectionStatus('connected');
+                reconnectAttemptRef.current = 0; // Reset on successful connection
+
+                // Update size and orientation on change
+                decoder.sizeChanged(({ width, height }) => {
+                    setVideoSize({ width, height });
+                    const landscape = width > height;
+                    setIsLandscape(landscape);
+                });
+
+                // Use measured stream for decoder
+                (originalStream as any)
+                    .pipeThrough(statsStream as any)
+                    .pipeTo(decoder.writable as any)
+                    .catch((error: any) => {
+                        if (error.name !== 'AbortError' &&
+                            !error.message.includes('locked') &&
+                            !error.message.includes('closed')) {
+                            console.error(`Video stream error:`, error);
+                            // Auto-reconnect on stream error
+                            if (!isManualDisconnectRef.current && isTabVisibleRef.current) {
+                                scheduleReconnect();
+                            }
+                        }
+                    });
+            });
+
+            if (scrcpy.clipboard) {
+                void scrcpy.clipboard.pipeTo(
+                    new WritableStream<string>({
+                        write(chunk) {
+                            globalThis.navigator.clipboard.writeText(chunk);
+                        },
+                    }),
+                ).catch(err => console.error(`Clipboard error:`, err));
+            }
+
+            void scrcpy.output.pipeTo(
+                new WritableStream<string>({
+                    write(chunk) {
+                        console.log(`Output:`, chunk);
+                    },
+                }),
+            );
+
+            // Listen for transport disconnect → trigger reconnect
+            transport.disconnected.then(() => {
+                console.warn('Transport disconnected');
+                if (!isManualDisconnectRef.current && isTabVisibleRef.current) {
+                    setConnectionStatus('disconnected');
+                    scheduleReconnect();
+                }
+            });
+
+            cleanupRef.current = () => {
+                isManualDisconnectRef.current = true;
+                scrcpy.close();
+                adb.close();
+                transport.close();
+            };
+
+        } catch (e) {
+            console.error(`Initialization failed:`, e);
+            setError(e instanceof Error ? e.message : 'Device connection failed');
+            setIsLoading(false);
+            setConnectionStatus('disconnected');
+            // Auto-reconnect on connection failure
+            if (!isManualDisconnectRef.current && isTabVisibleRef.current) {
+                scheduleReconnect();
+            }
+        }
+    }, [serial, quality, disconnectDevice]);
+
+    // --- Schedule reconnect with exponential backoff ---
+    const scheduleReconnect = useCallback(() => {
+        if (reconnectAttemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
+            console.error(`Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached`);
+            setConnectionStatus('disconnected');
+            setError('Connection lost. Max reconnect attempts reached.');
+            return;
+        }
+
+        // Clear any existing timer
+        if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current);
+        }
+
+        const attempt = reconnectAttemptRef.current;
+        const delay = Math.min(1000 * Math.pow(2, attempt), 30000); // 1s, 2s, 4s, 8s, 16s, 30s max
+        reconnectAttemptRef.current++;
+
+        console.log(`Reconnecting in ${delay / 1000}s (attempt ${attempt + 1}/${MAX_RECONNECT_ATTEMPTS})...`);
+        setConnectionStatus('reconnecting');
+
+        reconnectTimerRef.current = setTimeout(() => {
+            if (isTabVisibleRef.current && !isManualDisconnectRef.current) {
+                isManualDisconnectRef.current = false;
+                connectDevice();
+            }
+        }, delay);
+    }, [connectDevice]);
+
+    // --- Main connection effect ---
+    useEffect(() => {
+        // Check if mobile device
+        setIsMobile(isMobileDevice());
+        isManualDisconnectRef.current = false;
+
+        connectDevice();
 
         return () => {
-            // Cleanup Audio
-            audioManagerRef.current?.cleanup();
-            audioManagerRef.current = null;
-
-            // Cleanup Scrcpy
-            if (cleanupRef.current) {
-                cleanupRef.current();
-                cleanupRef.current = null;
+            isManualDisconnectRef.current = true;
+            // Cancel any pending reconnect
+            if (reconnectTimerRef.current) {
+                clearTimeout(reconnectTimerRef.current);
+                reconnectTimerRef.current = null;
             }
-
-            controllerRef.current = null;
-            scrcpyClientRef.current = null;
-
-            if (wrapper) {
-                wrapper.innerHTML = '';
-            }
-
-            // Reset State
-            setIsVideoLoaded(false);
-            setIsLandscape(false);
-            setIsMuted(true);
-            isMutedRef.current = true;
-            setAudioAvailable(true);
-            setAudioError(false);
+            disconnectDevice();
         };
-    }, [serial, quality]);
+    }, [serial, quality, connectDevice, disconnectDevice]);
+
+    // --- Tab visibility handler ---
+    useEffect(() => {
+        const handleVisibilityChange = () => {
+            if (document.hidden) {
+                // Tab became hidden → disconnect to save bandwidth
+                console.log('Tab hidden → disconnecting video stream');
+                isTabVisibleRef.current = false;
+                isManualDisconnectRef.current = true;
+                // Cancel any pending reconnect
+                if (reconnectTimerRef.current) {
+                    clearTimeout(reconnectTimerRef.current);
+                    reconnectTimerRef.current = null;
+                }
+                disconnectDevice();
+                setConnectionStatus('disconnected');
+            } else {
+                // Tab became visible → reconnect
+                console.log('Tab visible → reconnecting video stream');
+                isTabVisibleRef.current = true;
+                isManualDisconnectRef.current = false;
+                reconnectAttemptRef.current = 0;
+                connectDevice();
+            }
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    }, [connectDevice, disconnectDevice]);
 
 
     // Toggle Mute
@@ -689,6 +789,15 @@ export default function DeviceDetail() {
                                 <span className={`text-xs px-1.5 py-0.5 rounded font-mono font-bold ${stats.fps > 20 ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
                                     {(stats.bitrate || 0).toFixed(1)} Mbps | {stats.fps || 0} FPS
                                 </span>
+                                {connectionStatus === 'connected' && (
+                                    <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-600 flex items-center gap-1"><Wifi className="h-3 w-3" /> Connected</span>
+                                )}
+                                {connectionStatus === 'reconnecting' && (
+                                    <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-600 flex items-center gap-1 animate-pulse"><RefreshCw className="h-3 w-3 animate-spin" /> Reconnecting...</span>
+                                )}
+                                {connectionStatus === 'disconnected' && !error && (
+                                    <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/20 text-red-600 flex items-center gap-1"><WifiOff className="h-3 w-3" /> Disconnected</span>
+                                )}
                             </CardDescription>
                         </div>
                         <Button
@@ -840,9 +949,18 @@ export default function DeviceDetail() {
                                         />
 
                                         {/* Loading Spinner */}
-                                        {!isVideoLoaded && (
+                                        {!isVideoLoaded && connectionStatus !== 'reconnecting' && (
                                             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                                                 <Spinner className="h-8 w-8 text-black" />
+                                            </div>
+                                        )}
+
+                                        {/* Reconnecting Overlay */}
+                                        {connectionStatus === 'reconnecting' && (
+                                            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 pointer-events-none z-10">
+                                                <RefreshCw className="h-10 w-10 text-white animate-spin mb-3" />
+                                                <p className="text-white text-sm font-medium">Reconnecting...</p>
+                                                <p className="text-white/60 text-xs mt-1">Attempt {reconnectAttemptRef.current}/{MAX_RECONNECT_ATTEMPTS}</p>
                                             </div>
                                         )}
                                     </TouchControl>

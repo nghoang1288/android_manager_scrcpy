@@ -47,7 +47,7 @@ export class WebSocketTransport implements AdbTransport {
     async connect(service: string): Promise<AdbSocket> {
         // 根据当前页面协议自动选择 ws:// 或 wss://
         const socket = new WebSocketStream(
-            `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:8080/api/adb/device/${this.serial}?service=${encodeURIComponent(service)}`
+            `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/api/adb/device/${this.serial}?service=${encodeURIComponent(service)}`
         );
         const open = await socket.opened;
         this.#sockets.add(socket);
