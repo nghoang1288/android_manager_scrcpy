@@ -98,6 +98,9 @@ export default function DeviceDetail() {
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const isTabVisibleRef = useRef(true);
     const isManualDisconnectRef = useRef(false);
+    const stallCountRef = useRef(0);
+    const scheduleReconnectRef = useRef<() => void>(() => { });
+    const STALL_THRESHOLD = 5; // seconds of 0 FPS before triggering reconnect
     const MAX_RECONNECT_ATTEMPTS = 10;
 
     // Macro State
@@ -114,23 +117,43 @@ export default function DeviceDetail() {
     const bytesCountRef = useRef(0);
     const framesCountRef = useRef(0);
 
-    // Initial stats timer
+    // Initial stats timer + stall detection
     useEffect(() => {
-        console.log("DEBUG: MOUNTED (useEffect [])");
         const timer = setInterval(() => {
-            console.log(`DEBUG: Stats tick. Frames: ${framesCountRef.current}, Bytes: ${bytesCountRef.current}`);
+            const currentFps = framesCountRef.current;
+            const currentBytes = bytesCountRef.current;
+
             setStats({
-                bitrate: (bytesCountRef.current * 8) / 1_000_000, // Mbps
-                fps: framesCountRef.current
+                bitrate: (currentBytes * 8) / 1_000_000, // Mbps
+                fps: currentFps
             });
+
+            // Stall detection: if connected but 0 FPS for STALL_THRESHOLD seconds
+            setConnectionStatus(prevStatus => {
+                if (prevStatus === 'connected' && currentFps === 0 && currentBytes === 0) {
+                    stallCountRef.current++;
+                    if (stallCountRef.current >= STALL_THRESHOLD) {
+                        console.warn(`Video stall detected (${stallCountRef.current}s of 0 FPS). Triggering reconnect...`);
+                        stallCountRef.current = 0;
+                        // Schedule reconnect on next tick to avoid state update conflicts
+                        setTimeout(() => {
+                            if (!isManualDisconnectRef.current && isTabVisibleRef.current) {
+                                scheduleReconnectRef.current();
+                            }
+                        }, 0);
+                        return 'disconnected';
+                    }
+                } else {
+                    stallCountRef.current = 0;
+                }
+                return prevStatus;
+            });
+
             // Reset counters
             bytesCountRef.current = 0;
-            framesCountRef.current = 0; // Reset frame count for next second
+            framesCountRef.current = 0;
         }, 1000);
-        return () => {
-            console.log("DEBUG: UNMOUNTED");
-            clearInterval(timer);
-        };
+        return () => clearInterval(timer);
     }, []);
 
     // DEBUG: Log state changes
@@ -570,6 +593,7 @@ export default function DeviceDetail() {
                 setIsVideoLoaded(true);
                 setConnectionStatus('connected');
                 reconnectAttemptRef.current = 0; // Reset on successful connection
+                stallCountRef.current = 0; // Reset stall counter
 
                 // Update size and orientation on change
                 decoder.sizeChanged(({ width, height }) => {
@@ -669,6 +693,9 @@ export default function DeviceDetail() {
             }
         }, delay);
     }, [connectDevice]);
+
+    // Keep ref in sync for stall detection timer
+    scheduleReconnectRef.current = scheduleReconnect;
 
     // --- Main connection effect ---
     useEffect(() => {
