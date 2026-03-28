@@ -8,6 +8,22 @@ interface KeyboardControlProps {
     enabled: boolean;
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) {
+        return false;
+    }
+
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
+        return true;
+    }
+
+    if (target instanceof HTMLElement && target.isContentEditable) {
+        return true;
+    }
+
+    return target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]') !== null;
+}
+
 // Browser key code mapping to Android key code
 const KEY_CODE_MAP: Record<string, AndroidKeyCode> = {
     'Backspace': AndroidKeyCode.Backspace,
@@ -141,6 +157,10 @@ export function KeyboardControl({ client, enabled }: KeyboardControlProps) {
         keyboardInjectorRef.current = keyboard;
 
         const handleKeyDown = async (e: KeyboardEvent) => {
+            if (isEditableTarget(e.target)) {
+                return;
+            }
+
             // Special handling: Ctrl+V for clipboard paste
             if ((e.ctrlKey || e.metaKey) && e.code === 'KeyV') {
                 e.preventDefault();
@@ -177,6 +197,10 @@ export function KeyboardControl({ client, enabled }: KeyboardControlProps) {
         };
 
         const handleKeyUp = async (e: KeyboardEvent) => {
+            if (isEditableTarget(e.target)) {
+                return;
+            }
+
             // Ctrl+V handled in keydown
             if ((e.ctrlKey || e.metaKey) && e.code === 'KeyV') {
                 e.preventDefault();

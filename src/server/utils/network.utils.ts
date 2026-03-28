@@ -1,14 +1,31 @@
+const normalizeIp = (value: string): string => {
+    if (value.startsWith("::ffff:")) {
+        return value.substring(7);
+    }
+
+    return value;
+};
+
 export const isHomeNetwork = (ip: string): boolean => {
-    // Localhost
-    if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') {
+    const normalizedIp = normalizeIp(ip.trim());
+
+    if (normalizedIp === "127.0.0.1" || normalizedIp === "::1" || normalizedIp === "localhost") {
         return true;
     }
 
-    // Handle IPv6 mapped IPv4
-    if (ip.startsWith('::ffff:')) {
-        ip = ip.substring(7);
+    return normalizedIp.startsWith("192.168.50.");
+};
+
+export const isHomeHostname = (hostname: string): boolean => {
+    const normalizedHost = normalizeIp(hostname.trim().toLowerCase());
+
+    if (!normalizedHost) {
+        return false;
     }
 
-    // Check for 192.168.50.x
-    return ip.startsWith('192.168.50.');
+    if (normalizedHost === "localhost") {
+        return true;
+    }
+
+    return normalizedHost.startsWith("192.168.50.");
 };

@@ -256,19 +256,22 @@ android_master_scrcpy/
 
 ### Environment Variables
 
-Create a `.env` file (optional):
+Copy `.env.example` to `.env` when you need local overrides:
 
 ```env
 # Database
-DATABASE_URL="file:./prisma/dev.db"
+DATABASE_URL="file:./dev.db"
 
-# API Configuration
-VITE_API_PORT=8080
-VITE_API_PROTOCOL=http
+# Dev proxy target for Vite
+VITE_API_PROXY_TARGET="https://127.0.0.1:8080"
 
 # Server
-NODE_ENV=development
+SERVER_PORT=8080
 LOG_LEVEL=info
+
+# Production secrets
+COOKIE_SECRET="replace-me"
+SESSION_TOKEN="replace-me"
 ```
 
 ### Server Configuration

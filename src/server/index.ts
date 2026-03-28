@@ -1,5 +1,4 @@
 import Fastify from "fastify";
-import { PrismaClient } from "@prisma/client";
 import websocketPlugin from "@fastify/websocket";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
@@ -7,6 +6,7 @@ import { config } from "./config.js";
 import { deviceRoutes } from "./routes/device.routes.js";
 import { adbRoutes } from "./routes/adb.routes.js";
 import { macroRoutes } from "./routes/macro.routes.js";
+import { prisma } from "./prisma.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -53,10 +53,6 @@ fastify.addHook('onRequest', async (_request, reply) => {
 });
 
 // 初始化 Prisma
-const prisma = new PrismaClient({
-    log: process.env.NODE_ENV !== 'production' ? ['query', 'error', 'warn'] : ['error']
-});
-
 // 测试数据库连接
 try {
     await prisma.$connect();
@@ -124,19 +120,6 @@ await fastify.register(async (fastify) => {
     await macroRoutes(fastify);
 }, { prefix: "/api/macros" });
 
-// Cloudflare Tunnel URL endpoint
-fastify.get("/api/tunnel/url", async (_request, reply) => {
-    try {
-        const tunnelUrlPath = path.resolve(__dirname, '../../tunnel/url.txt');
-        if (fs.existsSync(tunnelUrlPath)) {
-            const url = fs.readFileSync(tunnelUrlPath, 'utf-8').trim();
-            return { url, available: true };
-        }
-        return { url: null, available: false, message: 'Tunnel not running' };
-    } catch {
-        return { url: null, available: false, message: 'Failed to read tunnel URL' };
-    }
-});
 
 // 全局错误处理
 fastify.setErrorHandler((error, request, reply) => {

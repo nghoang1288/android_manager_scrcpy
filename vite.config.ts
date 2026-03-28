@@ -5,6 +5,8 @@ import path from "path"
 import fs from "fs"
 
 // https://vite.dev/config/
+const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || 'https://127.0.0.1:8080'
+
 export default defineConfig({
     plugins: [react(), tailwindcss(),],
     resolve: {
@@ -27,7 +29,7 @@ export default defineConfig({
         },
         proxy: {
             '/api': {
-                target: 'https://192.168.50.226:8080',
+                target: apiProxyTarget,
                 changeOrigin: true,
                 secure: false,
                 ws: true,
@@ -46,5 +48,23 @@ export default defineConfig({
     },
     worker: {
         format: 'es',
+    },
+    build: {
+        rollupOptions: {
+            output: {
+                manualChunks(id) {
+                    if (id.includes("@yume-chan") || id.includes("tinyh264")) {
+                        return "scrcpy-vendor";
+                    }
+                    if (id.includes("react-router") || id.includes("react-dom") || id.includes("react/jsx-runtime")) {
+                        return "react-vendor";
+                    }
+                    if (id.includes("lucide-react") || id.includes("/components/ui/")) {
+                        return "ui-vendor";
+                    }
+                    return undefined;
+                },
+            },
+        },
     },
 })
