@@ -11,6 +11,15 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
+.local/
+deployment.tar
+deploy.tar
+deploy.tar.gz
+deploy_v2.tar.gz
+adb-keys/
 
 # Editor directories and files
 .vscode/*
@@ -25,10 +34,16 @@ dist-ssr
 
 /src/generated/prisma
 /prisma/dev.db
+/prisma/dev.db-shm
+/prisma/dev.db-wal
+/prisma/macro-assets/
+/prisma/backups/
 
 # SSL Certificates
 /wadbd-4.7/
 /.cursor/
 /certs/
+/cert.pem
+/key.pem
 /.cursorignore
 /amc.iml

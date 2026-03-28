@@ -53,7 +53,16 @@ export const config = {
     pagination: {
         defaultLimit: 50,
         maxLimit: 100,
-    }
+    },
+
+    // Network detection
+    network: {
+        homePublicIps: (process.env.HOME_PUBLIC_IPS || "")
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean),
+        publicIpCacheMs: parseInt(process.env.PUBLIC_IP_CACHE_MS || "600000", 10),
+    },
 } as const;
 
 // 环境检查

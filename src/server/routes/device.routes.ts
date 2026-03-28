@@ -6,15 +6,107 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { PrismaClient } from "@prisma/client";
 import type { DeviceRegisterData } from "../../types/device.types.ts";
 import { config } from "../config.js";
-import { isHomeNetwork } from "../utils/network.utils.js";
+import { isHomeHostname, isHomeNetwork } from "../utils/network.utils.js";
 
 export async function deviceRoutes(fastify: FastifyInstance, prisma: PrismaClient) {
+    let cachedServerPublicIps: string[] = [];
+    let cachedServerPublicIpsAt = 0;
+
+    const normalizeIp = (value: string) => {
+        const trimmed = value.trim();
+        if (trimmed.startsWith("::ffff:")) {
+            return trimmed.substring(7);
+        }
+
+        return trimmed;
+    };
+
+    const resolveClientIp = (request: FastifyRequest) => {
+        const cfConnectingIp = request.headers["cf-connecting-ip"];
+        if (typeof cfConnectingIp === "string" && cfConnectingIp.trim()) {
+            return cfConnectingIp.trim();
+        }
+
+        const xForwardedFor = request.headers["x-forwarded-for"];
+        if (typeof xForwardedFor === "string" && xForwardedFor.trim()) {
+            return xForwardedFor.split(",")[0]!.trim();
+        }
+
+        const xRealIp = request.headers["x-real-ip"];
+        if (typeof xRealIp === "string" && xRealIp.trim()) {
+            return xRealIp.trim();
+        }
+
+        return request.ip;
+    };
+
+    const resolveRequestHostname = (request: FastifyRequest) => {
+        const hostHeader = request.headers.host;
+        if (typeof hostHeader === "string" && hostHeader.trim()) {
+            return hostHeader.split(":")[0]!.trim().toLowerCase();
+        }
+
+        return "";
+    };
+
+    const fetchServerPublicIp = async (url: string) => {
+        const response = await fetch(url, {
+            signal: AbortSignal.timeout(3000),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Public IP lookup failed with status ${response.status}`);
+        }
+
+        return normalizeIp((await response.text()).trim());
+    };
+
+    const resolveHomePublicIps = async () => {
+        const now = Date.now();
+        if (cachedServerPublicIps.length > 0 && now - cachedServerPublicIpsAt < config.network.publicIpCacheMs) {
+            return cachedServerPublicIps;
+        }
+
+        const configuredIps = config.network.homePublicIps.map(normalizeIp);
+        const discoveredIps = new Set<string>(configuredIps);
+
+        for (const endpoint of ["https://api.ipify.org", "https://ipv4.icanhazip.com"]) {
+            try {
+                const ip = await fetchServerPublicIp(endpoint);
+                if (ip) {
+                    discoveredIps.add(ip);
+                }
+            } catch (error) {
+                fastify.log.warn({ error, endpoint }, "Failed to resolve server public IP");
+            }
+        }
+
+        cachedServerPublicIps = Array.from(discoveredIps);
+        cachedServerPublicIpsAt = now;
+        return cachedServerPublicIps;
+    };
 
     // Network check endpoint
     fastify.get("/network-check", async (request, reply) => {
-        const clientIp = request.ip;
-        const isHome = isHomeNetwork(clientIp);
-        return { isHome, clientIp };
+        const clientIp = normalizeIp(resolveClientIp(request));
+        const requestHostname = resolveRequestHostname(request);
+        const homePublicIps = await resolveHomePublicIps();
+        const isHomeByClientIp = isHomeNetwork(clientIp);
+        const isHomeByHostname = isHomeHostname(requestHostname);
+        const isHomeByPublicIp = homePublicIps.includes(clientIp);
+        const isHome = isHomeByClientIp || isHomeByHostname || isHomeByPublicIp;
+
+        return {
+            isHome,
+            clientIp,
+            requestHostname,
+            homePublicIps,
+            detection: {
+                isHomeByClientIp,
+                isHomeByHostname,
+                isHomeByPublicIp,
+            },
+        };
     });
 
     // 设备注册接口
